@@ -4,7 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import worker, { buildPages, buildPolycomPages, generateFiles, parseEntries, renderMenu } from './phonebook.mjs';
+import worker, {
+  buildPages,
+  buildPolycomPages,
+  generateFiles,
+  parseEntries,
+  renderMenu,
+  renderPolycomDirectory,
+} from './phonebook.mjs';
 
 const BASE = 'http://example.test/phonebook/';
 
@@ -229,6 +236,53 @@ test('Polycom pages declare UTF-8', () => {
   assert.match(page.html, /<meta http-equiv="Content-Type" content="text\/html; charset=UTF-8"\/>/);
 });
 
+// renderPolycomDirectory
+
+test('the Polycom directory matches the format the phone expects', () => {
+  const xml = renderPolycomDirectory([
+    { number: '101', owner: 'TESTI4', details: 'Matti' },
+    { number: '600', owner: 'HamPY Testinumero', details: '' },
+  ]);
+  assert.equal(
+    xml,
+    [
+      '<?xml version="1.0" encoding="utf-8" standalone="yes"?>',
+      '<directory>',
+      '  <item_list>',
+      '    <item>',
+      '      <ln>TESTI4 (Matti)</ln>',
+      '      <ct>101</ct>',
+      '      <sd>1</sd>',
+      '    </item>',
+      '    <item>',
+      '      <ln>HamPY Testinumero</ln>',
+      '      <ct>600</ct>',
+      '      <sd>2</sd>',
+      '    </item>',
+      '  </item_list>',
+      '</directory>',
+      '',
+    ].join('\n'),
+  );
+});
+
+test('the Polycom directory lists every entry, keeping leading zeros', () => {
+  const entries = [...parseEntries(sheet(171)), { number: '059', owner: 'HamPY', details: '' }];
+  const xml = renderPolycomDirectory(entries);
+  assert.equal([...xml.matchAll(/<item>/g)].length, 172);
+  assert.match(xml, /<ct>059<\/ct>\n      <sd>172<\/sd>/);
+});
+
+test('Polycom directory names stop at 40 bytes without splitting a character', () => {
+  const xml = renderPolycomDirectory([{ number: '1', owner: 'ä'.repeat(25), details: '' }]);
+  assert.match(xml, new RegExp(`<ln>${'ä'.repeat(20)}</ln>`));
+});
+
+test('Polycom directory names are escaped after they are cut', () => {
+  const xml = renderPolycomDirectory([{ number: '1', owner: `${'a'.repeat(39)}&b`, details: '' }]);
+  assert.match(xml, new RegExp(`<ln>${'a'.repeat(39)}&amp;</ln>`));
+});
+
 // generateFiles
 
 async function tempDir() {
@@ -241,6 +295,7 @@ test('generateFiles writes one file per page', async () => {
   const out = await tempDir();
   await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(40)) });
   assert.deepEqual((await readdir(out)).sort(), [
+    '000000000000-directory.xml',
     'directory-1.xml',
     'directory-2.xml',
     'directory.xml',
@@ -260,7 +315,12 @@ test('generateFiles removes page files left over from a longer list', async () =
   await writeFile(join(out, 'directory-9.xml'), 'old');
   await writeFile(join(out, 'polycom-9.html'), 'old');
   await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(1)) });
-  assert.deepEqual((await readdir(out)).sort(), ['directory-1.xml', 'directory.xml', 'polycom-1.html']);
+  assert.deepEqual((await readdir(out)).sort(), [
+    '000000000000-directory.xml',
+    'directory-1.xml',
+    'directory.xml',
+    'polycom-1.html',
+  ]);
 });
 
 test('generateFiles leaves unrelated files alone', async () => {
@@ -424,6 +484,26 @@ test('a Polycom phone gets an HTML error screen when the sheet fails', async (t)
   const response = await worker.fetch(get('/polycom-1.html'), workerEnv({ fetchImpl }));
   assert.equal(response.headers.get('content-type'), 'text/html; charset=UTF-8');
   assert.doesNotMatch(await response.text(), /CiscoIPPhone/);
+});
+
+test('the worker serves the whole Polycom directory as UTF-8 XML', async () => {
+  const response = await worker.fetch(get('/000000000000-directory.xml'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/xml; charset=UTF-8');
+  assert.equal([...(await response.text()).matchAll(/<item>/g)].length, 40);
+});
+
+test('the worker has no per-phone directory, so the phone falls back to the shared one', async () => {
+  const response = await worker.fetch(get('/0004f2123456-directory.xml'), workerEnv({ fetchImpl: fetchText(sheet(1)) }));
+  assert.equal(response.status, 404);
+});
+
+test('the Polycom directory is a 503 when the sheet fails, so no error screen reaches the phone as contacts', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const fetchImpl = async () => { throw new Error('offline'); };
+  const response = await worker.fetch(get('/000000000000-directory.xml'), workerEnv({ fetchImpl }));
+  assert.equal(response.status, 503);
+  assert.doesNotMatch(await response.text(), /<directory>/);
 });
 
 test('the worker honours PAGE_SIZE', async () => {

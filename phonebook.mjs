@@ -21,6 +21,8 @@ const FETCHED_AT_HEADER = 'X-Fetched-At';
 const MENU_FILE = 'directory.xml';
 const PAGE_FILE = /^directory-\d+\.xml$/;
 const POLYCOM_FILE = /^polycom-\d+\.html$/;
+const POLYCOM_DIRECTORY_FILE = '000000000000-directory.xml';
+const POLYCOM_MAX_NAME_BYTES = 40;
 
 function parseCsv(text) {
   const rows = [];
@@ -221,6 +223,37 @@ export function buildPolycomPages(entries, { baseUrl, pageSize = MAX_PAGE_SIZE }
   }));
 }
 
+function polycomName(entry) {
+  const encoder = new TextEncoder();
+  let name = '';
+  let bytes = 0;
+  for (const char of fullName(entry)) {
+    bytes += encoder.encode(char).length;
+    if (bytes > POLYCOM_MAX_NAME_BYTES) break;
+    name += char;
+  }
+  return name.trimEnd();
+}
+
+// The contact directory the phone downloads from its provisioning server. Names go in ln, and sd is the speed dial index.
+export function renderPolycomDirectory(entries) {
+  return [
+    '<?xml version="1.0" encoding="utf-8" standalone="yes"?>',
+    '<directory>',
+    '  <item_list>',
+    ...entries.flatMap((entry, index) => [
+      '    <item>',
+      `      <ln>${escapeXml(polycomName(entry))}</ln>`,
+      `      <ct>${escapeXml(entry.number)}</ct>`,
+      `      <sd>${index + 1}</sd>`,
+      '    </item>',
+    ]),
+    '  </item_list>',
+    '</directory>',
+    '',
+  ].join('\n');
+}
+
 async function fetchSheet(sheetUrl, fetchImpl) {
   const response = await fetchImpl(sheetUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`Sheet download failed: HTTP ${response.status}`);
@@ -246,6 +279,7 @@ export async function generateFiles({
     { file: MENU_FILE, content: renderMenu(baseUrl) },
     ...pages.map(({ file, xml }) => ({ file, content: xml })),
     ...buildPolycomPages(entries, { baseUrl, pageSize }).map(({ file, html }) => ({ file, content: html })),
+    { file: POLYCOM_DIRECTORY_FILE, content: renderPolycomDirectory(entries) },
   ];
 
   await mkdir(out, { recursive: true });
@@ -374,6 +408,16 @@ export default {
     const url = new URL(request.url);
     const file = url.pathname.slice(1);
     if (file === MENU_FILE) return xmlResponse(renderMenu(`${url.origin}/`));
+
+    // A phone stores this file as its contacts, so a failure must not look like a directory.
+    if (file === POLYCOM_DIRECTORY_FILE) {
+      try {
+        return xmlResponse(renderPolycomDirectory(await loadEntries(request, env)));
+      } catch (error) {
+        console.error(error);
+        return new Response('Phonebook unavailable', { status: 503 });
+      }
+    }
 
     const polycom = POLYCOM_FILE.test(file);
     if (!polycom && !PAGE_FILE.test(file)) return new Response('Not found', { status: 404 });

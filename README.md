@@ -6,8 +6,9 @@ It is one JavaScript file with no dependencies and no database. The sheet must s
 `directory.xml` is a one-item menu, which the phone adds to its Directories list. The item opens
 `directory-1.xml`, and each page links to its neighbours with the Next and Previous softkeys.
 
-Polycom pages are `polycom-1.html`, `polycom-2.html` and so on. Selecting an entry dials it, and
-Next and Previous are links above and below the list.
+Polycom phones get `000000000000-directory.xml`, a contact directory they download from their
+provisioning server. The browser pages `polycom-1.html`, `polycom-2.html` and so on are a second way
+to reach the list: selecting an entry dials it, and Next and Previous are links above and below it.
 
 ## Set up a phone
 
@@ -17,7 +18,11 @@ Cisco, in the phone's config file:
 <directoryURL>http://<address>/directory.xml</directoryURL>
 ```
 
-Polycom VVX 201 (UC Software 5.5.0 or newer), in the phone's config file. Open the phonebook from
+Polycom contact directory: put `000000000000-directory.xml` where the phone looks for its
+configuration, or point the phone's provisioning server at this service. A boot replaces the phone's
+copy with the server's, so sheet changes reach the phone when it restarts.
+
+Polycom browser pages (UC Software 5.5.0 or newer), in the phone's config file. Open the phonebook from
 Home > Applications. `mb.main.reloadPage` opens page 1 each time, and `mb.main.idleTimeout` gives
 five minutes before the phone leaves the browser, instead of the default 40 seconds:
 
@@ -58,7 +63,9 @@ be read, it serves the last cached copy, or a short error screen if it has none.
 
 ## Phone limits
 
-The VVX 201 local directory file holds only 99 contacts, which is why Polycom uses browser pages.
+From Poly's and 8x8's published tables, a VVX 201 directory file holds 99 contacts. The file lists
+every entry anyway, and they don't say what the phone does with the rest. The browser pages have no
+such limit. Names are cut to 40 bytes, the limit in Poly's admin guide.
 
 From Cisco's `CiscoIPPhone.xsd`, which the 7941 parser enforces:
 
