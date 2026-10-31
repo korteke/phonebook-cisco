@@ -1,4 +1,4 @@
-// Paged phonebook for Cisco 7941-style IP phones, built from a public Google Sheet.
+// Paged phonebook for Cisco 7941-style and Polycom VVX 201 phones, built from a public Google Sheet.
 //
 // One file, no dependencies, two ways to run it:
 //   Static files:      node phonebook.mjs --base-url http://host/phonebook/ --out ./public
@@ -20,6 +20,7 @@ const CACHE_PATH = '/__sheet-cache';
 const FETCHED_AT_HEADER = 'X-Fetched-At';
 const MENU_FILE = 'directory.xml';
 const PAGE_FILE = /^directory-\d+\.xml$/;
+const POLYCOM_FILE = /^polycom-\d+\.html$/;
 
 function parseCsv(text) {
   const rows = [];
@@ -89,9 +90,21 @@ function escapeXml(value) {
     .replace(/'/g, '&apos;');
 }
 
-function displayName({ number, owner, details }) {
-  const name = owner && details ? `${owner} (${details})` : owner || details || number;
-  return Array.from(name).slice(0, MAX_NAME_LENGTH).join('').trimEnd();
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fullName({ number, owner, details }) {
+  return owner && details ? `${owner} (${details})` : owner || details || number;
+}
+
+function displayName(entry) {
+  return Array.from(fullName(entry)).slice(0, MAX_NAME_LENGTH).join('').trimEnd();
 }
 
 function softKey(name, url, position) {
@@ -144,18 +157,68 @@ function renderPage(entries, page, total, baseUrl) {
   return lines.join('\n');
 }
 
-export function buildPages(entries, { baseUrl, pageSize = MAX_PAGE_SIZE }) {
+function splitPages(entries, pageSize) {
   if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE_SIZE) {
     throw new Error(`Page size must be between 1 and ${MAX_PAGE_SIZE}: ${pageSize}`);
   }
 
-  const base = normalizeBaseUrl(baseUrl);
   const total = Math.ceil(entries.length / pageSize);
-  return Array.from({ length: total }, (_, index) => {
-    const page = index + 1;
-    const slice = entries.slice(index * pageSize, page * pageSize);
-    return { file: pageFile(page), xml: renderPage(slice, page, total, base) };
-  });
+  return Array.from({ length: total }, (_, index) =>
+    entries.slice(index * pageSize, (index + 1) * pageSize),
+  );
+}
+
+export function buildPages(entries, { baseUrl, pageSize = MAX_PAGE_SIZE }) {
+  const base = normalizeBaseUrl(baseUrl);
+  const slices = splitPages(entries, pageSize);
+  return slices.map((slice, index) => ({
+    file: pageFile(index + 1),
+    xml: renderPage(slice, index + 1, slices.length, base),
+  }));
+}
+
+function polycomFile(page) {
+  return `polycom-${page}.html`;
+}
+
+function renderPolycomDocument(lines) {
+  return [
+    '<html>',
+    '<head>',
+    `<title>${escapeHtml(TITLE)}</title>`,
+    '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>',
+    '</head>',
+    '<body>',
+    ...lines,
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+}
+
+// VVX browsers ignore Cisco-style softkeys, so paging uses plain links above and below the list.
+function renderPolycomPage(entries, page, total, baseUrl) {
+  const paging = [];
+  if (page < total) paging.push(`<a href="${escapeHtml(`${baseUrl}${polycomFile(page + 1)}`)}">Next</a><br/>`);
+  if (page > 1) paging.push(`<a href="${escapeHtml(`${baseUrl}${polycomFile(page - 1)}`)}">Previous</a><br/>`);
+
+  return renderPolycomDocument([
+    `<p>${escapeHtml(`${TITLE} ${page}/${total}`)}</p>`,
+    ...paging,
+    ...entries.map(
+      (entry) => `<a href="tel://${escapeHtml(entry.number)}">${escapeHtml(fullName(entry))}</a><br/>`,
+    ),
+    ...paging,
+  ]);
+}
+
+export function buildPolycomPages(entries, { baseUrl, pageSize = MAX_PAGE_SIZE }) {
+  const base = normalizeBaseUrl(baseUrl);
+  const slices = splitPages(entries, pageSize);
+  return slices.map((slice, index) => ({
+    file: polycomFile(index + 1),
+    html: renderPolycomPage(slice, index + 1, slices.length, base),
+  }));
 }
 
 async function fetchSheet(sheetUrl, fetchImpl) {
@@ -177,20 +240,24 @@ export async function generateFiles({
   const { join } = await import('node:path');
 
   // Everything that can fail on bad input happens before the first write.
-  const pages = buildPages(parseEntries(await fetchSheet(sheetUrl, fetchImpl)), { baseUrl, pageSize });
-
-  const files = [{ file: MENU_FILE, xml: renderMenu(baseUrl) }, ...pages];
+  const entries = parseEntries(await fetchSheet(sheetUrl, fetchImpl));
+  const pages = buildPages(entries, { baseUrl, pageSize });
+  const files = [
+    { file: MENU_FILE, content: renderMenu(baseUrl) },
+    ...pages.map(({ file, xml }) => ({ file, content: xml })),
+    ...buildPolycomPages(entries, { baseUrl, pageSize }).map(({ file, html }) => ({ file, content: html })),
+  ];
 
   await mkdir(out, { recursive: true });
-  for (const { file, xml } of files) {
+  for (const { file, content } of files) {
     const temp = join(out, `.${file}.tmp`);
-    await writeFile(temp, xml);
+    await writeFile(temp, content);
     await rename(temp, join(out, file));
   }
 
   const current = new Set(files.map(({ file }) => file));
   for (const file of await readdir(out)) {
-    if (PAGE_FILE.test(file) && !current.has(file)) await rm(join(out, file));
+    if ((PAGE_FILE.test(file) || POLYCOM_FILE.test(file)) && !current.has(file)) await rm(join(out, file));
   }
   return pages;
 }
@@ -217,7 +284,7 @@ async function runCli() {
     pageSize: values['page-size'] === undefined ? undefined : Number(values['page-size']),
     sheetUrl: values.sheet,
   });
-  console.log(`Wrote ${pages.length} page(s) to ${values.out}`);
+  console.log(`Wrote ${pages.length} page(s) per phone type to ${values.out}`);
 }
 
 async function runIfMain() {
@@ -266,16 +333,23 @@ async function loadEntries(request, env) {
   }
 }
 
-function xmlResponse(xml, status = 200) {
-  const body = new TextEncoder().encode(xml);
+function textResponse(text, contentType) {
+  const body = new TextEncoder().encode(text);
   return new Response(body, {
-    status,
     headers: {
-      'Content-Type': 'text/xml; charset=UTF-8',
+      'Content-Type': contentType,
       'Content-Length': String(body.length),
       'Cache-Control': 'no-store',
     },
   });
+}
+
+function xmlResponse(xml) {
+  return textResponse(xml, 'text/xml; charset=UTF-8');
+}
+
+function htmlResponse(html) {
+  return textResponse(html, 'text/html; charset=UTF-8');
 }
 
 function errorScreen() {
@@ -291,23 +365,32 @@ function errorScreen() {
   );
 }
 
+function polycomErrorScreen() {
+  return htmlResponse(renderPolycomDocument(['<p>Puhelinluettelo ei ole juuri nyt saatavilla.</p>']));
+}
+
 export default {
   async fetch(request, env = {}) {
     const url = new URL(request.url);
     const file = url.pathname.slice(1);
     if (file === MENU_FILE) return xmlResponse(renderMenu(`${url.origin}/`));
-    if (!PAGE_FILE.test(file)) return new Response('Not found', { status: 404 });
+
+    const polycom = POLYCOM_FILE.test(file);
+    if (!polycom && !PAGE_FILE.test(file)) return new Response('Not found', { status: 404 });
 
     try {
-      const pages = buildPages(await loadEntries(request, env), {
+      const entries = await loadEntries(request, env);
+      const options = {
         baseUrl: `${url.origin}/`,
         pageSize: env.PAGE_SIZE === undefined ? undefined : Number(env.PAGE_SIZE),
-      });
+      };
+      const pages = polycom ? buildPolycomPages(entries, options) : buildPages(entries, options);
       const page = pages.find((candidate) => candidate.file === file);
-      return page ? xmlResponse(page.xml) : new Response('Not found', { status: 404 });
+      if (!page) return new Response('Not found', { status: 404 });
+      return polycom ? htmlResponse(page.html) : xmlResponse(page.xml);
     } catch (error) {
       console.error(error);
-      return errorScreen();
+      return polycom ? polycomErrorScreen() : errorScreen();
     }
   },
 };

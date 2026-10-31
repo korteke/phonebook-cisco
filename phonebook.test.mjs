@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import worker, { buildPages, generateFiles, parseEntries, renderMenu } from './phonebook.mjs';
+import worker, { buildPages, buildPolycomPages, generateFiles, parseEntries, renderMenu } from './phonebook.mjs';
 
 const BASE = 'http://example.test/phonebook/';
 
@@ -177,6 +177,58 @@ test('the menu is a CiscoIPPhoneMenu that opens the first page', () => {
   assert.match(xml, new RegExp(`<MenuItem><Name>HamPY puhelinluettelo</Name><URL>${BASE}directory-1.xml</URL></MenuItem>`));
 });
 
+// buildPolycomPages
+
+test('Polycom pages are split like the Cisco pages', () => {
+  const pages = buildPolycomPages(parseEntries(sheet(40)), { baseUrl: BASE, pageSize: 20 });
+  assert.deepEqual(pages.map((page) => page.file), ['polycom-1.html', 'polycom-2.html']);
+});
+
+test('Polycom entries are links that dial with tel://, keeping leading zeros', () => {
+  const [page] = buildPolycomPages([{ number: '059', owner: 'HamPY', details: 'Ryhmä' }], { baseUrl: BASE });
+  assert.match(page.html, /<a href="tel:\/\/059">HamPY \(Ryhmä\)<\/a>/);
+});
+
+test('Polycom names are not cut, because the phone wraps long lines', () => {
+  const details = 'x'.repeat(50);
+  const [page] = buildPolycomPages([{ number: '1', owner: 'OH', details }], { baseUrl: BASE });
+  assert.match(page.html, new RegExp(`>OH \\(${details}\\)</a>`));
+});
+
+test('Polycom pages show the position', () => {
+  const [, page] = buildPolycomPages(parseEntries(sheet(40)), { baseUrl: BASE });
+  assert.match(page.html, /<p>HamPY puhelinluettelo 2\/2<\/p>/);
+});
+
+test('the first Polycom page links to Next only', () => {
+  const [first] = buildPolycomPages(parseEntries(sheet(40)), { baseUrl: BASE });
+  assert.match(first.html, new RegExp(`<a href="${BASE}polycom-2.html">Next</a>`));
+  assert.doesNotMatch(first.html, />Previous</);
+});
+
+test('the last Polycom page links to Previous only', () => {
+  const [, last] = buildPolycomPages(parseEntries(sheet(40)), { baseUrl: BASE });
+  assert.match(last.html, new RegExp(`<a href="${BASE}polycom-1.html">Previous</a>`));
+  assert.doesNotMatch(last.html, />Next</);
+});
+
+test('Polycom paging links appear above and below the entries', () => {
+  const [first] = buildPolycomPages(parseEntries(sheet(40)), { baseUrl: BASE });
+  assert.equal([...first.html.matchAll(/>Next</g)].length, 2);
+  assert.ok(first.html.indexOf('>Next<') < first.html.indexOf('tel://'));
+  assert.ok(first.html.lastIndexOf('>Next<') > first.html.lastIndexOf('tel://'));
+});
+
+test('Polycom names escape special characters for HTML', () => {
+  const [page] = buildPolycomPages([{ number: '1', owner: `<&>"'`, details: '' }], { baseUrl: BASE });
+  assert.match(page.html, />&lt;&amp;&gt;&quot;&#39;<\/a>/);
+});
+
+test('Polycom pages declare UTF-8', () => {
+  const [page] = buildPolycomPages(parseEntries(sheet(1)), { baseUrl: BASE });
+  assert.match(page.html, /<meta http-equiv="Content-Type" content="text\/html; charset=UTF-8"\/>/);
+});
+
 // generateFiles
 
 async function tempDir() {
@@ -188,7 +240,13 @@ const fetchText = (text) => async () => new Response(text);
 test('generateFiles writes one file per page', async () => {
   const out = await tempDir();
   await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(40)) });
-  assert.deepEqual((await readdir(out)).sort(), ['directory-1.xml', 'directory-2.xml', 'directory.xml']);
+  assert.deepEqual((await readdir(out)).sort(), [
+    'directory-1.xml',
+    'directory-2.xml',
+    'directory.xml',
+    'polycom-1.html',
+    'polycom-2.html',
+  ]);
 });
 
 test('generateFiles writes the menu as directory.xml', async () => {
@@ -200,8 +258,9 @@ test('generateFiles writes the menu as directory.xml', async () => {
 test('generateFiles removes page files left over from a longer list', async () => {
   const out = await tempDir();
   await writeFile(join(out, 'directory-9.xml'), 'old');
+  await writeFile(join(out, 'polycom-9.html'), 'old');
   await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(1)) });
-  assert.deepEqual((await readdir(out)).sort(), ['directory-1.xml', 'directory.xml']);
+  assert.deepEqual((await readdir(out)).sort(), ['directory-1.xml', 'directory.xml', 'polycom-1.html']);
 });
 
 test('generateFiles leaves unrelated files alone', async () => {
@@ -339,6 +398,32 @@ test('the worker shows an error screen when the sheet fails and nothing is cache
   const response = await worker.fetch(get('/directory-1.xml'), workerEnv({ fetchImpl }));
   assert.equal(response.status, 200);
   assert.match(await response.text(), /<CiscoIPPhoneText>/);
+});
+
+test('the worker serves Polycom pages as UTF-8 HTML', async () => {
+  const response = await worker.fetch(get('/polycom-1.html'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
+  const bytes = new Uint8Array(await response.clone().arrayBuffer());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=UTF-8');
+  assert.equal(response.headers.get('content-length'), String(bytes.length));
+});
+
+test('the worker builds Polycom links from the address the phone used', async () => {
+  const response = await worker.fetch(get('/polycom-1.html'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
+  assert.match(await response.text(), /<a href="http:\/\/phonebook\.example\.test\/polycom-2\.html">Next<\/a>/);
+});
+
+test('the worker returns 404 for a Polycom page past the end', async () => {
+  const response = await worker.fetch(get('/polycom-3.html'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
+  assert.equal(response.status, 404);
+});
+
+test('a Polycom phone gets an HTML error screen when the sheet fails', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const fetchImpl = async () => { throw new Error('offline'); };
+  const response = await worker.fetch(get('/polycom-1.html'), workerEnv({ fetchImpl }));
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=UTF-8');
+  assert.doesNotMatch(await response.text(), /CiscoIPPhone/);
 });
 
 test('the worker honours PAGE_SIZE', async () => {

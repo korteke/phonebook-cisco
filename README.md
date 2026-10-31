@@ -1,10 +1,31 @@
-# HamPY phonebook for Cisco IP phones
+# HamPY phonebook for Cisco and Polycom IP phones
 
-Turns the HamPY Google Sheet into paged `CiscoIPPhoneDirectory` XML for Cisco 7941-style phones.
+Turns the HamPY Google Sheet into paged phonebooks for Cisco 7941-style phones and the Polycom VVX 201.
 It is one JavaScript file with no dependencies and no database. The sheet must stay publicly readable.
 
 `directory.xml` is a one-item menu, which the phone adds to its Directories list. The item opens
 `directory-1.xml`, and each page links to its neighbours with the Next and Previous softkeys.
+
+Polycom pages are `polycom-1.html`, `polycom-2.html` and so on. Selecting an entry dials it, and
+Next and Previous are links above and below the list.
+
+## Set up a phone
+
+Cisco, in the phone's config file:
+
+```xml
+<directoryURL>http://<address>/directory.xml</directoryURL>
+```
+
+Polycom VVX 201 (UC Software 5.5.0 or newer), in the phone's config file. Open the phonebook from
+Home > Applications. `mb.main.reloadPage` opens page 1 each time, and `mb.main.idleTimeout` gives
+five minutes before the phone leaves the browser, instead of the default 40 seconds:
+
+```xml
+<polycomConfig>
+  <mb mb.main.home="http://<address>/polycom-1.html" mb.main.reloadPage="1" mb.main.idleTimeout="300"/>
+</polycomConfig>
+```
 
 ## Run as static files
 
@@ -14,7 +35,8 @@ Requires Node.js 18 or newer.
 node phonebook.mjs --base-url http://your-server/phonebook/ --out ./public
 ```
 
-Serve the output folder with any web server, as `text/xml; charset=UTF-8`. `--base-url` must be the
+Serve the output folder with any web server, with `.xml` as `text/xml; charset=UTF-8` and `.html` as
+`text/html; charset=UTF-8`. `--base-url` must be the
 address phones use to reach the folder, because each page links to the next with a full address.
 Run the command on a schedule to pick up sheet changes. If the sheet can't be read, the existing
 files are left alone and the command exits with an error.
@@ -28,14 +50,15 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-Point the phone's `directoryURL` at `http://<worker-address>/directory.xml`. Use `http://`, and turn
-off "Always Use HTTPS" if the Worker is on a custom domain.
+Use `http://` in phone configs, and turn off "Always Use HTTPS" if the Worker is on a custom domain.
 
 The Worker rereads the sheet at most every five minutes per Cloudflare location. If the sheet can't
 be read, it serves the last cached copy, or a short error screen if it has none. Set the optional
 `PAGE_SIZE` and `SHEET_URL` variables to override the defaults.
 
 ## Phone limits
+
+The VVX 201 local directory file holds only 99 contacts, which is why Polycom uses browser pages.
 
 From Cisco's `CiscoIPPhone.xsd`, which the 7941 parser enforces:
 
