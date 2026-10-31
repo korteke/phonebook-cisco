@@ -3,8 +3,8 @@
 Turns the HamPY Google Sheet into paged `CiscoIPPhoneDirectory` XML for Cisco 7941-style phones.
 It is one JavaScript file with no dependencies and no database. The sheet must stay publicly readable.
 
-Page 1 is `directory.xml`, and later pages are `directory-2.xml`, `directory-3.xml` and so on.
-Each page links to its neighbours with the Next and Previous softkeys.
+`directory.xml` is a one-item menu, which the phone adds to its Directories list. The item opens
+`directory-1.xml`, and each page links to its neighbours with the Next and Previous softkeys.
 
 ## Run as static files
 

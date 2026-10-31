@@ -18,7 +18,8 @@ const CACHE_FRESH_MS = 5 * 60 * 1000;
 const CACHE_KEEP_SECONDS = 30 * 24 * 60 * 60;
 const CACHE_PATH = '/__sheet-cache';
 const FETCHED_AT_HEADER = 'X-Fetched-At';
-const PAGE_FILE = /^directory(?:-\d+)?\.xml$/;
+const MENU_FILE = 'directory.xml';
+const PAGE_FILE = /^directory-\d+\.xml$/;
 
 function parseCsv(text) {
   const rows = [];
@@ -98,7 +99,26 @@ function softKey(name, url, position) {
 }
 
 function pageFile(page) {
-  return page === 1 ? 'directory.xml' : `directory-${page}.xml`;
+  return `directory-${page}.xml`;
+}
+
+function normalizeBaseUrl(baseUrl) {
+  if (!/^https?:\/\/[^/]/i.test(baseUrl)) {
+    throw new Error(`Base URL must start with http:// or https://: ${baseUrl}`);
+  }
+  return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+}
+
+// The phone adds these items to its Directories list, so the directory URL must return a menu.
+export function renderMenu(baseUrl) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<CiscoIPPhoneMenu>',
+    `<Title>${escapeXml(TITLE)}</Title>`,
+    `<MenuItem><Name>${escapeXml(TITLE)}</Name><URL>${escapeXml(`${normalizeBaseUrl(baseUrl)}${pageFile(1)}`)}</URL></MenuItem>`,
+    '</CiscoIPPhoneMenu>',
+    '',
+  ].join('\n');
 }
 
 function renderPage(entries, page, total, baseUrl) {
@@ -125,14 +145,11 @@ function renderPage(entries, page, total, baseUrl) {
 }
 
 export function buildPages(entries, { baseUrl, pageSize = MAX_PAGE_SIZE }) {
-  if (!/^https?:\/\/[^/]/i.test(baseUrl)) {
-    throw new Error(`Base URL must start with http:// or https://: ${baseUrl}`);
-  }
   if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE_SIZE) {
     throw new Error(`Page size must be between 1 and ${MAX_PAGE_SIZE}: ${pageSize}`);
   }
 
-  const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const base = normalizeBaseUrl(baseUrl);
   const total = Math.ceil(entries.length / pageSize);
   return Array.from({ length: total }, (_, index) => {
     const page = index + 1;
@@ -162,14 +179,16 @@ export async function generateFiles({
   // Everything that can fail on bad input happens before the first write.
   const pages = buildPages(parseEntries(await fetchSheet(sheetUrl, fetchImpl)), { baseUrl, pageSize });
 
+  const files = [{ file: MENU_FILE, xml: renderMenu(baseUrl) }, ...pages];
+
   await mkdir(out, { recursive: true });
-  for (const { file, xml } of pages) {
+  for (const { file, xml } of files) {
     const temp = join(out, `.${file}.tmp`);
     await writeFile(temp, xml);
     await rename(temp, join(out, file));
   }
 
-  const current = new Set(pages.map((page) => page.file));
+  const current = new Set(files.map(({ file }) => file));
   for (const file of await readdir(out)) {
     if (PAGE_FILE.test(file) && !current.has(file)) await rm(join(out, file));
   }
@@ -276,6 +295,7 @@ export default {
   async fetch(request, env = {}) {
     const url = new URL(request.url);
     const file = url.pathname.slice(1);
+    if (file === MENU_FILE) return xmlResponse(renderMenu(`${url.origin}/`));
     if (!PAGE_FILE.test(file)) return new Response('Not found', { status: 404 });
 
     try {

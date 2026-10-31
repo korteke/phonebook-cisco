@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import worker, { buildPages, generateFiles, parseEntries } from './phonebook.mjs';
+import worker, { buildPages, generateFiles, parseEntries, renderMenu } from './phonebook.mjs';
 
 const BASE = 'http://example.test/phonebook/';
 
@@ -65,9 +65,9 @@ test('buildPages splits 170 entries into six pages of at most 32', () => {
   assert.deepEqual(pages.map((page) => entriesIn(page.xml)), [32, 32, 32, 32, 32, 10]);
 });
 
-test('buildPages names the first page directory.xml so the current URL keeps working', () => {
+test('buildPages numbers every page, leaving directory.xml for the menu', () => {
   const pages = buildPages(parseEntries(sheet(40)), { baseUrl: BASE });
-  assert.deepEqual(pages.map((page) => page.file), ['directory.xml', 'directory-2.xml']);
+  assert.deepEqual(pages.map((page) => page.file), ['directory-1.xml', 'directory-2.xml']);
 });
 
 test('buildPages honours a smaller page size', () => {
@@ -92,13 +92,13 @@ test('the first page has Next but no Previous', () => {
 
 test('the last page has Previous but no Next', () => {
   const [, last] = buildPages(parseEntries(sheet(40)), { baseUrl: BASE });
-  assert.equal(softKey(last.xml, 'Previous').url, `${BASE}directory.xml`);
+  assert.equal(softKey(last.xml, 'Previous').url, `${BASE}directory-1.xml`);
   assert.equal(softKey(last.xml, 'Next'), undefined);
 });
 
 test('a middle page links to both neighbours', () => {
   const [, middle] = buildPages(parseEntries(sheet(70)), { baseUrl: BASE });
-  assert.equal(softKey(middle.xml, 'Previous').url, `${BASE}directory.xml`);
+  assert.equal(softKey(middle.xml, 'Previous').url, `${BASE}directory-1.xml`);
   assert.equal(softKey(middle.xml, 'Next').url, `${BASE}directory-3.xml`);
 });
 
@@ -112,7 +112,7 @@ test('softkeys keep the same positions on every page', () => {
   assert.deepEqual(softKeys(middle.xml), [
     { name: 'Dial', url: 'SoftKey:Dial', position: 1 },
     { name: 'Next', url: `${BASE}directory-3.xml`, position: 2 },
-    { name: 'Previous', url: `${BASE}directory.xml`, position: 3 },
+    { name: 'Previous', url: `${BASE}directory-1.xml`, position: 3 },
     { name: 'Exit', url: 'SoftKey:Exit', position: 4 },
     { name: 'EditDial', url: 'SoftKey:EditDial', position: 5 },
   ]);
@@ -169,6 +169,14 @@ test('pages declare UTF-8', () => {
   assert.ok(page.xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
 });
 
+// renderMenu
+
+test('the menu is a CiscoIPPhoneMenu that opens the first page', () => {
+  const xml = renderMenu(BASE);
+  assert.match(xml, /<CiscoIPPhoneMenu>/);
+  assert.match(xml, new RegExp(`<MenuItem><Name>HamPY puhelinluettelo</Name><URL>${BASE}directory-1.xml</URL></MenuItem>`));
+});
+
 // generateFiles
 
 async function tempDir() {
@@ -180,14 +188,20 @@ const fetchText = (text) => async () => new Response(text);
 test('generateFiles writes one file per page', async () => {
   const out = await tempDir();
   await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(40)) });
-  assert.deepEqual((await readdir(out)).sort(), ['directory-2.xml', 'directory.xml']);
+  assert.deepEqual((await readdir(out)).sort(), ['directory-1.xml', 'directory-2.xml', 'directory.xml']);
+});
+
+test('generateFiles writes the menu as directory.xml', async () => {
+  const out = await tempDir();
+  await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(1)) });
+  assert.match(await readFile(join(out, 'directory.xml'), 'utf8'), /<CiscoIPPhoneMenu>/);
 });
 
 test('generateFiles removes page files left over from a longer list', async () => {
   const out = await tempDir();
   await writeFile(join(out, 'directory-9.xml'), 'old');
   await generateFiles({ baseUrl: BASE, out, fetchImpl: fetchText(sheet(1)) });
-  assert.deepEqual(await readdir(out), ['directory.xml']);
+  assert.deepEqual((await readdir(out)).sort(), ['directory-1.xml', 'directory.xml']);
 });
 
 test('generateFiles leaves unrelated files alone', async () => {
@@ -233,15 +247,25 @@ function get(path) {
 }
 
 test('the worker serves the first page with explicit type and length', async () => {
-  const response = await worker.fetch(get('/directory.xml'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
+  const response = await worker.fetch(get('/directory-1.xml'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('content-type'), 'text/xml; charset=UTF-8');
   assert.equal(response.headers.get('content-length'), String(bytes.length));
 });
 
+test('the worker serves the menu at directory.xml without fetching the sheet', async () => {
+  let fetches = 0;
+  const fetchImpl = async () => { fetches++; return new Response(sheet(1)); };
+  const response = await worker.fetch(get('/directory.xml'), workerEnv({ fetchImpl }));
+  const xml = await response.text();
+  assert.equal(response.headers.get('content-type'), 'text/xml; charset=UTF-8');
+  assert.match(xml, /<URL>http:\/\/phonebook\.example\.test\/directory-1\.xml<\/URL>/);
+  assert.equal(fetches, 0);
+});
+
 test('the worker builds links from the address the phone used, including plain HTTP', async () => {
-  const response = await worker.fetch(get('/directory.xml'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
+  const response = await worker.fetch(get('/directory-1.xml'), workerEnv({ fetchImpl: fetchText(sheet(40)) }));
   assert.equal(softKey(await response.text(), 'Next').url, 'http://phonebook.example.test/directory-2.xml');
 });
 
@@ -267,8 +291,8 @@ test('the worker reuses a recently fetched sheet', async () => {
   let fetches = 0;
   const fetchImpl = async () => { fetches++; return new Response(sheet(1)); };
   const env = workerEnv({ fetchImpl, now: () => 1000 });
-  await worker.fetch(get('/directory.xml'), env);
-  await worker.fetch(get('/directory.xml'), env);
+  await worker.fetch(get('/directory-1.xml'), env);
+  await worker.fetch(get('/directory-1.xml'), env);
   assert.equal(fetches, 1);
 });
 
@@ -277,9 +301,9 @@ test('the worker fetches again once the cached sheet is over five minutes old', 
   let fetches = 0;
   const fetchImpl = async () => { fetches++; return new Response(sheet(fetches)); };
   const env = workerEnv({ fetchImpl, now: () => time });
-  await worker.fetch(get('/directory.xml'), env);
+  await worker.fetch(get('/directory-1.xml'), env);
   time = 5 * 60 * 1000 + 1;
-  const response = await worker.fetch(get('/directory.xml'), env);
+  const response = await worker.fetch(get('/directory-1.xml'), env);
   assert.equal(fetches, 2);
   assert.equal(entriesIn(await response.text()), 2);
 });
@@ -289,10 +313,10 @@ test('the worker serves the stale copy when a refresh fails', async () => {
   let healthy = true;
   const fetchImpl = async () => healthy ? new Response(sheet(3)) : new Response('down', { status: 503 });
   const env = workerEnv({ fetchImpl, now: () => time });
-  await worker.fetch(get('/directory.xml'), env);
+  await worker.fetch(get('/directory-1.xml'), env);
   time = 60 * 60 * 1000;
   healthy = false;
-  const response = await worker.fetch(get('/directory.xml'), env);
+  const response = await worker.fetch(get('/directory-1.xml'), env);
   assert.equal(response.status, 200);
   assert.equal(entriesIn(await response.text()), 3);
 });
@@ -302,23 +326,23 @@ test('the worker does not replace the cached copy with a non-phonebook response'
   let body = sheet(3);
   const fetchImpl = async () => new Response(body);
   const env = workerEnv({ fetchImpl, now: () => time });
-  await worker.fetch(get('/directory.xml'), env);
+  await worker.fetch(get('/directory-1.xml'), env);
   time = 60 * 60 * 1000;
   body = '<html>Sign in</html>';
-  const response = await worker.fetch(get('/directory.xml'), env);
+  const response = await worker.fetch(get('/directory-1.xml'), env);
   assert.equal(entriesIn(await response.text()), 3);
 });
 
 test('the worker shows an error screen when the sheet fails and nothing is cached', async (t) => {
   t.mock.method(console, 'error', () => {});
   const fetchImpl = async () => { throw new Error('offline'); };
-  const response = await worker.fetch(get('/directory.xml'), workerEnv({ fetchImpl }));
+  const response = await worker.fetch(get('/directory-1.xml'), workerEnv({ fetchImpl }));
   assert.equal(response.status, 200);
   assert.match(await response.text(), /<CiscoIPPhoneText>/);
 });
 
 test('the worker honours PAGE_SIZE', async () => {
   const env = workerEnv({ fetchImpl: fetchText(sheet(40)), PAGE_SIZE: '20' });
-  const response = await worker.fetch(get('/directory.xml'), env);
+  const response = await worker.fetch(get('/directory-1.xml'), env);
   assert.equal(entriesIn(await response.text()), 20);
 });
