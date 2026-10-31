@@ -18,9 +18,10 @@ Cisco, in the phone's config file:
 <directoryURL>http://<address>/directory.xml</directoryURL>
 ```
 
-Polycom contact directory: put `000000000000-directory.xml` where the phone looks for its
-configuration, or point the phone's provisioning server at this service. A boot replaces the phone's
-copy with the server's, so sheet changes reach the phone when it restarts.
+Polycom contact directory: copy `000000000000-directory.xml` to the phone's provisioning server. The
+phone has no setting for a directory URL, so it needs a provisioning server. An older Polycom guide
+says the server's copy replaces the phone's at boot, but forum reports say a phone may download it
+only once, so check that sheet changes arrive.
 
 Polycom browser pages (UC Software 5.5.0 or newer), in the phone's config file. Open the phonebook from
 Home > Applications. `mb.main.reloadPage` opens page 1 each time, and `mb.main.idleTimeout` gives
