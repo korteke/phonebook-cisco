@@ -235,17 +235,17 @@ function polycomName(entry) {
   return name.trimEnd();
 }
 
-// The contact directory the phone downloads from its provisioning server. Names go in ln, and sd is the speed dial index.
+// The contact directory the phone downloads from its provisioning server. Names go in ln. There is
+// deliberately no sd, the speed dial index, because contacts with one can take over unused line keys.
 export function renderPolycomDirectory(entries) {
   return [
     '<?xml version="1.0" encoding="utf-8" standalone="yes"?>',
     '<directory>',
     '  <item_list>',
-    ...entries.flatMap((entry, index) => [
+    ...entries.flatMap((entry) => [
       '    <item>',
       `      <ln>${escapeXml(polycomName(entry))}</ln>`,
       `      <ct>${escapeXml(entry.number)}</ct>`,
-      `      <sd>${index + 1}</sd>`,
       '    </item>',
     ]),
     '  </item_list>',

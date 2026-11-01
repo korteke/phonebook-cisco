@@ -249,19 +249,19 @@ def polycom_name(entry):
     return ''.join(name).rstrip(WHITESPACE)
 
 
-# The contact directory the phone downloads from its provisioning server. Names go in ln, and sd is the speed dial index.
+# The contact directory the phone downloads from its provisioning server. Names go in ln. There is
+# deliberately no sd, the speed dial index, because contacts with one can take over unused line keys.
 def render_polycom_directory(entries):
     lines = [
         '<?xml version="1.0" encoding="utf-8" standalone="yes"?>',
         '<directory>',
         '  <item_list>',
     ]
-    for index, entry in enumerate(entries):
+    for entry in entries:
         lines += [
             '    <item>',
             '      <ln>{}</ln>'.format(escape_xml(polycom_name(entry))),
             '      <ct>{}</ct>'.format(escape_xml(entry['number'])),
-            '      <sd>{}</sd>'.format(index + 1),
             '    </item>',
         ]
     lines += ['  </item_list>', '</directory>', '']

@@ -252,12 +252,10 @@ test('the Polycom directory matches the format the phone expects', () => {
       '    <item>',
       '      <ln>TESTI4 (Matti)</ln>',
       '      <ct>101</ct>',
-      '      <sd>1</sd>',
       '    </item>',
       '    <item>',
       '      <ln>HamPY Testinumero</ln>',
       '      <ct>600</ct>',
-      '      <sd>2</sd>',
       '    </item>',
       '  </item_list>',
       '</directory>',
@@ -270,7 +268,7 @@ test('the Polycom directory lists every entry, keeping leading zeros', () => {
   const entries = [...parseEntries(sheet(171)), { number: '059', owner: 'HamPY', details: '' }];
   const xml = renderPolycomDirectory(entries);
   assert.equal([...xml.matchAll(/<item>/g)].length, 172);
-  assert.match(xml, /<ct>059<\/ct>\n      <sd>172<\/sd>/);
+  assert.match(xml, /<ct>059<\/ct>/);
 });
 
 test('Polycom directory names stop at 40 bytes without splitting a character', () => {
