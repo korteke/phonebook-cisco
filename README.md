@@ -1,7 +1,8 @@
 # HamPY phonebook for Cisco and Polycom IP phones
 
 Turns the HamPY Google Sheet into paged phonebooks for Cisco 7941-style phones and the Polycom VVX 201.
-It is one JavaScript file with no dependencies and no database. The sheet must stay publicly readable.
+It is one file with no dependencies and no database, in JavaScript (`phonebook.mjs`) or Python
+(`phonebook.py`). The sheet must stay publicly readable.
 
 `directory.xml` is a one-item menu, which the phone adds to its Directories list. The item opens
 `directory-1.xml`, and each page links to its neighbours with the Next and Previous softkeys.
@@ -35,10 +36,12 @@ five minutes before the phone leaves the browser, instead of the default 40 seco
 
 ## Run as static files
 
-Requires Node.js 18 or newer.
+Use either version, which write identical files: Node.js 18 or newer, or Python 3.6 or newer. Node
+or Python only builds the files, and your web server serves them.
 
 ```sh
 node phonebook.mjs --base-url http://your-server/phonebook/ --out ./public
+python3 phonebook.py --base-url http://your-server/phonebook/ --out ./public
 ```
 
 Serve the output folder with any web server, with `.xml` as `text/xml; charset=UTF-8` and `.html` as
@@ -83,4 +86,8 @@ show a different order, but the schema doesn't allow it.
 
 ```sh
 npm test
+python3 -m unittest test_phonebook
 ```
+
+The Python tests also check that both versions write identical files, and skip that without Node.js.
+A change to the generated files needs making in both versions.
